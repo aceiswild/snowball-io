@@ -177,7 +177,6 @@ io.on('connection', (socket) => {
       state.players.set(id, player);
       console.log('player added. total players:', state.players.size);
 
-      // Tell the client it spawned
       socket.emit('you:spawn', {
         id: player.id,
         color: player.color,
@@ -185,7 +184,6 @@ io.on('connection', (socket) => {
         name: player.name
       });
 
-      // Start match logic
       if (DEV_SOLO && state.phase === PHASES.LOBBY) {
         state.phase = PHASES.LIVE;
         state.countdown = 0;
@@ -242,6 +240,7 @@ io.on('connection', (socket) => {
     }
   });
 });
+
 
 
 // ---- Physics loop
