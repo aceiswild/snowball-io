@@ -23,21 +23,42 @@
   </div>
   <div id="qr"></div>
   <script>
-    issue.onclick = async () => {
-      const employeeId = emp.value.trim();
-      const displayName = name.value.trim() || undefined;
-      if (!employeeId) return alert('Employee ID required');
-      const r = await fetch('/issue', {
-        method:'POST', headers:{'Content-Type':'application/json'},
+  const issueBtn = document.getElementById('issue');
+  const empInput = document.getElementById('emp');
+  const nameInput = document.getElementById('name');
+  const qrDiv = document.getElementById('qr');
+
+  issueBtn.addEventListener('click', async () => {
+    try {
+      const employeeId = empInput.value.trim();
+      const displayName = nameInput.value.trim() || undefined;
+      if (!employeeId) { alert('Employee ID required'); return; }
+
+      const res = await fetch('/issue', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
         body: JSON.stringify({ employeeId, displayName })
-      }).then(r=>r.json());
-      if (r.error) return alert(r.error);
-      qr.innerHTML = \`
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
+      const r = await res.json();
+      if (r.error) throw new Error(r.error);
+
+      qrDiv.innerHTML = `
         <p>Scan to join:</p>
-        <img src="\${r.qrDataUrl}" alt="QR" />
-        <p><small>\${r.joinUrl}</small></p>
-      \`;
-    };
-  </script>
+        <img src="${r.qrDataUrl}" alt="QR" />
+        <p><small>${r.joinUrl}</small></p>
+      `;
+    } catch (err) {
+      console.error(err);
+      alert('Failed to generate QR: ' + (err?.message || err));
+    }
+  });
+</script>
+
 </body>
 </html>
