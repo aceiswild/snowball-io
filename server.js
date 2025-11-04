@@ -10,6 +10,7 @@ import cors from 'cors'; // <-- NEW
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const MIN_PLAYERS = Number(process.env.MIN_PLAYERS || 1);
 
 const app = express();
 const server = http.createServer(app);
@@ -101,7 +102,6 @@ function clampArena([x,y,z]) {
   return [x,y,z];
 }
 
-const MIN_PLAYERS = Number(process.env.MIN_PLAYERS || 1); // 👈 add this near the top of the file with other constants
 function tryStartMatch() {
   if (state.phase !== PHASES.LOBBY) return;
   const aliveCount = [...state.players.values()].length;
