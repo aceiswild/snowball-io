@@ -17,13 +17,15 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: [
-      'https://snowball.lanewaypcrepairs.com', // your live domain
-      'http://localhost:3000'                  // local dev, safe to keep
+      'https://snowball.lanewaypcrepairs.com', // your HostGator page
+      'https://snowball-dian.onrender.com',    // your Render backend
+      'http://localhost:3000'                  // dev
     ],
     methods: ['GET', 'POST'],
     credentials: true
   }
 });
+
 
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
