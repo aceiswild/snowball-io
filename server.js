@@ -1,4 +1,3 @@
-
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -13,8 +12,17 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const server = http.createServer(app);
+
+// Socket.IO with explicit CORS (allow your domain and local testing)
 const io = new Server(server, {
-  cors: { origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : '*' }
+  cors: {
+    origin: [
+      'https://snowball.lanewaypcrepairs.com', // your live domain
+      'http://localhost:3000'                  // local dev, safe to keep
+    ],
+    methods: ['GET', 'POST'],
+    credentials: true
+  }
 });
 
 const PORT = process.env.PORT || 3000;
@@ -25,16 +33,28 @@ app.set('trust proxy', true);
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// --- Simple health check (for quick sanity tests)
+app.get('/health', (req, res) => res.send('ok'));
+
 // Issue short-lived join tokens and QR codes
 app.post('/issue', async (req, res) => {
-  const { employeeId, displayName } = req.body || {};
-  if (!employeeId) return res.status(400).json({ error: 'employeeId required' });
+  try {
+    const { employeeId, displayName } = req.body || {};
+    if (!employeeId) return res.status(400).json({ error: 'employeeId required' });
 
-  const token = jwt.sign({ employeeId, displayName }, JWT_SECRET, { expiresIn: '10m' });
-  const base = PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
-  const joinUrl = `${base}/play.html?token=${encodeURIComponent(token)}`;
-  const qrDataUrl = await QRCode.toDataURL(joinUrl, { margin: 1, scale: 8 });
-  res.json({ joinUrl, qrDataUrl });
+    // Debug log (safe: no token printed)
+    console.log('POST /issue:', { employeeId, displayName });
+
+    const token = jwt.sign({ employeeId, displayName }, JWT_SECRET, { expiresIn: '10m' });
+    const base = PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+    const joinUrl = `${base}/play.html?token=${encodeURIComponent(token)}`;
+    const qrDataUrl = await QRCode.toDataURL(joinUrl, { margin: 1, scale: 8 });
+
+    res.json({ joinUrl, qrDataUrl });
+  } catch (err) {
+    console.error('Error in /issue:', err?.message || err);
+    res.status(500).json({ error: 'Failed to issue QR' });
+  }
 });
 
 // ---------------- Game State ----------------
@@ -79,9 +99,11 @@ function tryStartMatch() {
     setTimeout(() => state.countdown = 2, 1000);
     setTimeout(() => state.countdown = 1, 2000);
     setTimeout(() => state.phase = PHASES.LIVE, 3000);
+    console.log('Match countdown started');
   }
 }
 function resetMatch() {
+  console.log('Resetting match');
   state.phase = PHASES.LOBBY;
   state.countdown = 0;
   state.snowballs.length = 0;
@@ -93,11 +115,14 @@ function resetMatch() {
 }
 
 io.on('connection', (socket) => {
+  console.log('socket connected', socket.id);
   let player = null;
 
   socket.on('auth:join', ({ token }) => {
+    console.log('auth:join received', !!token);
     try {
       const { employeeId, displayName } = jwt.verify(token, JWT_SECRET);
+      console.log('auth ok for', employeeId, displayName);
       const id = socket.id;
       const color = `hsl(${Math.floor(Math.random()*360)} 70% 55%)`;
       player = {
@@ -114,6 +139,7 @@ io.on('connection', (socket) => {
       socket.emit('you:spawn', { id, color, pos: player.pos, name: player.name });
       tryStartMatch();
     } catch (e) {
+      console.error('auth failed', e.message);
       socket.emit('error', { message: 'Invalid or expired token' });
       socket.disconnect();
     }
@@ -146,6 +172,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    console.log('socket disconnected', socket.id);
     if (player) {
       state.players.delete(player.id);
       const alive = [...state.players.values()].filter(p=>p.alive).length;
@@ -206,6 +233,7 @@ setInterval(() => {
   }
 }, 1000 / TICKRATE);
 
+// Snapshots to clients
 setInterval(() => {
   const players = [...state.players.values()].map(p => ({
     id: p.id, name: p.name, color: p.color, pos: p.pos, yaw: p.yaw, alive: p.alive
@@ -221,4 +249,6 @@ setInterval(() => {
 
 server.listen(PORT, () => {
   console.log(`Snowball-IO listening on ${PORT}`);
+  console.log('PUBLIC_BASE_URL:', PUBLIC_BASE_URL || '(derived from request)');
+  console.log('Allowed CORS origins:', ['https://snowball.lanewaypcrepairs.com', 'http://localhost:3000']);
 });
