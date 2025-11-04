@@ -1,7 +1,7 @@
 
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 
-const socket = io({ transports: ['websocket'] });
+const socket = io();
 const qs = new URLSearchParams(location.search);
 const token = qs.get('token');
 const statusEl = document.getElementById('status');
