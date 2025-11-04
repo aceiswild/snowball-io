@@ -6,24 +6,29 @@ import jwt from 'jsonwebtoken';
 import QRCode from 'qrcode';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import cors from 'cors'; // <-- NEW
+import cors from 'cors';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const MIN_PLAYERS = Number(process.env.MIN_PLAYERS || 1);
-const DEV_SOLO     = (process.env.DEV_SOLO || 'true') === 'true'; // force-start helper
+
+// ---- Config / Env
+const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL; // e.g. https://snowball.lanewaypcrepairs.com or Render URL
+const MIN_PLAYERS = Number(process.env.MIN_PLAYERS || 1);   // 1 for solo testing, 2+ for real matches
+const DEV_SOLO = (process.env.DEV_SOLO || 'true') === 'true'; // default true so you can test right away
+
+// Front-end on HostGator, backend on Render, and local dev
+const ALLOWED_ORIGINS = [
+  'https://snowball.lanewaypcrepairs.com',
+  'https://snowball-dian.onrender.com',
+  'http://localhost:3000'
+];
 
 const app = express();
 const server = http.createServer(app);
 
-// --- Allowed origins (front-end on HostGator, backend on Render, and local dev)
-const ALLOWED_ORIGINS = [
-  'https://snowball.lanewaypcrepairs.com', // HostGator page
-  'https://snowball-dian.onrender.com',    // Render backend
-  'http://localhost:3000'                  // local dev
-];
-
-// Socket.IO with explicit CORS
+// ---- Socket.IO CORS
 const io = new Server(server, {
   cors: {
     origin: ALLOWED_ORIGINS,
@@ -32,33 +37,25 @@ const io = new Server(server, {
   }
 });
 
-const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL; // e.g., https://snowball.lanewaypcrepairs.com or Render URL
-
 app.set('trust proxy', true);
 
-// --- Express CORS for REST endpoints (this was the missing piece)
-app.use(cors({
-  origin: ALLOWED_ORIGINS,
-  credentials: true
-}));
-
+// ---- REST CORS
+app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- Simple health check
+// ---- Health
 app.get('/health', (req, res) => res.send('ok'));
 
-// Issue short-lived join tokens and QR codes
+// ---- Issue short-lived join tokens + QR
 app.post('/issue', async (req, res) => {
   try {
     const { employeeId, displayName } = req.body || {};
     if (!employeeId) return res.status(400).json({ error: 'employeeId required' });
 
     console.log('POST /issue:', { employeeId, displayName });
-
     const token = jwt.sign({ employeeId, displayName }, JWT_SECRET, { expiresIn: '10m' });
+
     const base = PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
     const joinUrl = `${base}/play.html?token=${encodeURIComponent(token)}`;
     const qrDataUrl = await QRCode.toDataURL(joinUrl, { margin: 1, scale: 8 });
@@ -85,7 +82,7 @@ const PHASES = { LOBBY: 'lobby', COUNTDOWN: 'countdown', LIVE: 'live', ENDED: 'e
 const state = {
   phase: PHASES.LOBBY,
   countdown: 0,
-  players: new Map(),
+  players: new Map(),   // id -> player
   snowballs: []
 };
 
@@ -94,13 +91,13 @@ function randSpawn() {
   const r = ARENA_RADIUS * 0.7 * Math.random();
   return [Math.cos(a) * r, 0, Math.sin(a) * r];
 }
-function clampArena([x,y,z]) {
-  const d = Math.hypot(x,z);
+function clampArena([x, y, z]) {
+  const d = Math.hypot(x, z);
   if (d > ARENA_RADIUS) {
     const s = ARENA_RADIUS / d;
-    return [x*s, y, z*s];
+    return [x * s, y, z * s];
   }
-  return [x,y,z];
+  return [x, y, z];
 }
 
 function tryStartMatch() {
@@ -111,16 +108,14 @@ function tryStartMatch() {
     state.phase = PHASES.COUNTDOWN;
     state.countdown = 3;
     console.log('Match countdown started');
-    setTimeout(() => state.countdown = 2, 1000);
-    setTimeout(() => state.countdown = 1, 2000);
+    setTimeout(() => (state.countdown = 2), 1000);
+    setTimeout(() => (state.countdown = 1), 2000);
     setTimeout(() => {
       state.phase = PHASES.LIVE;
       console.log('Phase -> LIVE');
     }, 3000);
   }
 }
-
-
 
 function resetMatch() {
   console.log('Resetting match');
@@ -134,26 +129,35 @@ function resetMatch() {
   }
 }
 
+// ---- Dev helpers (optional)
+app.post('/dev/force-start', (req, res) => {
+  if ([PHASES.LOBBY, PHASES.COUNTDOWN].includes(state.phase)) {
+    state.phase = PHASES.LIVE;
+    state.countdown = 0;
+    console.log('Dev force-start: phase -> LIVE');
+    return res.json({ ok: true, phase: state.phase });
+  }
+  res.json({ ok: false, phase: state.phase });
+});
+
+app.post('/dev/reset', (req, res) => {
+  resetMatch();
+  res.json({ ok: true, phase: state.phase });
+});
+
+// ---- Sockets
 io.on('connection', (socket) => {
   console.log('socket connected', socket.id);
   let player = null;
 
   socket.on('auth:join', ({ token }) => {
-  // after: state.players.set(id, player); socket.emit('you:spawn', ...);
-  if (DEV_SOLO && state.phase === PHASES.LOBBY) {
-    // Start immediately in solo mode
-    console.log('DEV_SOLO: forcing immediate LIVE start');
-    state.phase = PHASES.LIVE;
-  }
-  tryStartMatch();
-
-    
     console.log('auth:join received', !!token);
     try {
       const { employeeId, displayName } = jwt.verify(token, JWT_SECRET);
       console.log('auth ok for', employeeId, displayName);
+
       const id = socket.id;
-      const color = `hsl(${Math.floor(Math.random()*360)} 70% 55%)`;
+      const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
       player = {
         id,
         name: displayName || String(employeeId),
@@ -162,11 +166,18 @@ io.on('connection', (socket) => {
         yaw: 0,
         alive: true,
         lastThrow: 0,
-        input: { fwd:0,back:0,left:0,right:0 }
+        input: { fwd: 0, back: 0, left: 0, right: 0 }
       };
       state.players.set(id, player);
       socket.emit('you:spawn', { id, color, pos: player.pos, name: player.name });
-      tryStartMatch();
+
+      // Solo-dev convenience: jump straight to LIVE if enabled
+      if (DEV_SOLO && state.phase === PHASES.LOBBY) {
+        state.phase = PHASES.LIVE;
+        console.log('DEV_SOLO: forcing immediate LIVE start');
+      } else {
+        tryStartMatch();
+      }
     } catch (e) {
       console.error('auth failed', e.message);
       socket.emit('error', { message: 'Invalid or expired token' });
@@ -187,15 +198,15 @@ io.on('connection', (socket) => {
     if (now - player.lastThrow < THROW_COOLDOWN_MS) return;
     player.lastThrow = now;
 
-    const d = dir && Array.isArray(dir) ? dir : [0,0,-1];
+    const d = Array.isArray(dir) ? dir : [0, 0, -1];
     const len = Math.hypot(d[0], d[1], d[2]) || 1;
-    const n = [d[0]/len, d[1]/len, d[2]/len];
+    const n = [d[0] / len, d[1] / len, d[2] / len];
 
     state.snowballs.push({
       id: `${socket.id}:${now}`,
       ownerId: player.id,
       pos: [player.pos[0], player.pos[1] + 1.0, player.pos[2]],
-      vel: [n[0]*SNOWBALL_SPEED, n[1]*SNOWBALL_SPEED, n[2]*SNOWBALL_SPEED],
+      vel: [n[0] * SNOWBALL_SPEED, n[1] * SNOWBALL_SPEED, n[2] * SNOWBALL_SPEED],
       bornAt: now
     });
   });
@@ -204,7 +215,7 @@ io.on('connection', (socket) => {
     console.log('socket disconnected', socket.id);
     if (player) {
       state.players.delete(player.id);
-      const alive = [...state.players.values()].filter(p=>p.alive).length;
+      const alive = [...state.players.values()].filter((p) => p.alive).length;
       if (alive < 2 && state.phase !== PHASES.LOBBY) {
         state.phase = PHASES.ENDED;
         setTimeout(resetMatch, 1500);
@@ -213,21 +224,21 @@ io.on('connection', (socket) => {
   });
 });
 
-// Physics/game loop
+// ---- Physics loop
 let lastTick = Date.now();
 setInterval(() => {
   const now = Date.now();
-  const dt = Math.min(0.05, (now - lastTick)/1000);
+  const dt = Math.min(0.05, (now - lastTick) / 1000);
   lastTick = now;
 
   if (state.phase === PHASES.LIVE) {
     for (const p of state.players.values()) {
       if (!p.alive) continue;
       let vx = 0, vz = 0;
-      if (p.input.fwd)  vz -= 1;
+      if (p.input.fwd) vz -= 1;
       if (p.input.back) vz += 1;
       if (p.input.left) vx -= 1;
-      if (p.input.right)vx += 1;
+      if (p.input.right) vx += 1;
       const mag = Math.hypot(vx, vz) || 1;
       vx /= mag; vz /= mag;
       p.pos[0] += vx * MOVE_SPEED * dt;
@@ -236,7 +247,8 @@ setInterval(() => {
     }
   }
 
-  state.snowballs = state.snowballs.filter(sb => (now - sb.bornAt) < SNOWBALL_LIFETIME);
+  // Snowball sim + hits
+  state.snowballs = state.snowballs.filter((sb) => now - sb.bornAt < SNOWBALL_LIFETIME);
   for (const sb of state.snowballs) {
     sb.pos[0] += sb.vel[0] * dt;
     sb.pos[1] += sb.vel[1] * dt;
@@ -244,7 +256,7 @@ setInterval(() => {
     if (sb.pos[1] < 0) sb.pos[1] = 0;
     for (const p of state.players.values()) {
       if (!p.alive || p.id === sb.ownerId) continue;
-      const d = Math.hypot(p.pos[0]-sb.pos[0], p.pos[2]-sb.pos[2]);
+      const d = Math.hypot(p.pos[0] - sb.pos[0], p.pos[2] - sb.pos[2]);
       if (d < HIT_RADIUS) {
         p.alive = false;
         io.emit('game:eliminated', { id: p.id });
@@ -253,7 +265,7 @@ setInterval(() => {
   }
 
   if (state.phase === PHASES.LIVE) {
-    const alive = [...state.players.values()].filter(p=>p.alive);
+    const alive = [...state.players.values()].filter((p) => p.alive);
     if (alive.length <= 1) {
       state.phase = PHASES.ENDED;
       io.emit('game:winner', { id: alive[0]?.id || null, name: alive[0]?.name || null });
@@ -262,22 +274,25 @@ setInterval(() => {
   }
 }, 1000 / TICKRATE);
 
-// Snapshots to clients
+// ---- Snapshots
 setInterval(() => {
-  const players = [...state.players.values()].map(p => ({
+  const players = [...state.players.values()].map((p) => ({
     id: p.id, name: p.name, color: p.color, pos: p.pos, yaw: p.yaw, alive: p.alive
   }));
-  const snowballs = state.snowballs.map(s => ({ id: s.id, pos: s.pos }));
+  const snowballs = state.snowballs.map((s) => ({ id: s.id, pos: s.pos }));
   io.emit('world:state', {
     phase: state.phase,
     countdown: state.countdown,
-    players, snowballs,
+    players,
+    snowballs,
     arena: { radius: ARENA_RADIUS }
   });
 }, 1000 / SNAPSHOT_RATE);
 
+// ---- Start server
 server.listen(PORT, () => {
   console.log(`Snowball-IO listening on ${PORT}`);
   console.log('PUBLIC_BASE_URL:', PUBLIC_BASE_URL || '(derived from request)');
   console.log('Allowed CORS origins:', ALLOWED_ORIGINS);
+  console.log('MIN_PLAYERS:', MIN_PLAYERS, 'DEV_SOLO:', DEV_SOLO);
 });
