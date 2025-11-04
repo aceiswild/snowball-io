@@ -1,0 +1,25 @@
+
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Snowball‑IO</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    html,body{margin:0;height:100%;overflow:hidden;background:#e9f2ff}
+    #overlay{position:fixed;top:10px;left:10px;background:#ffffffcc;padding:8px 12px;border-radius:8px;font-family:system-ui}
+    #status{font-weight:600}
+    canvas{display:block}
+  </style>
+</head>
+<body>
+  <div id="overlay">
+    <div id="status">Connecting…</div>
+    <div>WASD to move, click to throw</div>
+  </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- Use CDN for Three.js so you don't have to host the file -->
+  <script src="https://unpkg.com/three@0.157.0/build/three.min.js"></script>
+  <script src="./client.js" type="module"></script>
+</body>
+</html>

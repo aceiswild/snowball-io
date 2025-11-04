@@ -1,0 +1,43 @@
+
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Snowball-IO Host</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body{font-family:system-ui;margin:2rem}
+    img{max-width:420px;display:block;margin-top:1rem}
+    .row{display:flex;gap:1rem;align-items:center;flex-wrap:wrap}
+    input{padding:.6rem .8rem;font-size:1rem}
+    button{padding:.6rem 1rem;font-size:1rem}
+    small{word-break:break-all;color:#555}
+  </style>
+</head>
+<body>
+  <h1>Snowball‑IO Host</h1>
+  <div class="row">
+    <input id="emp" placeholder="Employee ID e.g. EMP001" />
+    <input id="name" placeholder="Display name (optional)" />
+    <button id="issue">Generate QR</button>
+  </div>
+  <div id="qr"></div>
+  <script>
+    issue.onclick = async () => {
+      const employeeId = emp.value.trim();
+      const displayName = name.value.trim() || undefined;
+      if (!employeeId) return alert('Employee ID required');
+      const r = await fetch('/issue', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ employeeId, displayName })
+      }).then(r=>r.json());
+      if (r.error) return alert(r.error);
+      qr.innerHTML = \`
+        <p>Scan to join:</p>
+        <img src="\${r.qrDataUrl}" alt="QR" />
+        <p><small>\${r.joinUrl}</small></p>
+      \`;
+    };
+  </script>
+</body>
+</html>
