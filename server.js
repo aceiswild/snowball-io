@@ -6,6 +6,7 @@ import jwt from 'jsonwebtoken';
 import QRCode from 'qrcode';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import cors from 'cors'; // <-- NEW
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,29 +14,38 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const server = http.createServer(app);
 
-// Socket.IO with explicit CORS (allow your domain and local testing)
+// --- Allowed origins (front-end on HostGator, backend on Render, and local dev)
+const ALLOWED_ORIGINS = [
+  'https://snowball.lanewaypcrepairs.com', // HostGator page
+  'https://snowball-dian.onrender.com',    // Render backend
+  'http://localhost:3000'                  // local dev
+];
+
+// Socket.IO with explicit CORS
 const io = new Server(server, {
   cors: {
-    origin: [
-      'https://snowball.lanewaypcrepairs.com', // your HostGator page
-      'https://snowball-dian.onrender.com',    // your Render backend
-      'http://localhost:3000'                  // dev
-    ],
+    origin: ALLOWED_ORIGINS,
     methods: ['GET', 'POST'],
     credentials: true
   }
 });
 
-
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL; // e.g., https://snowball.lanewaypcrepairs.com
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL; // e.g., https://snowball.lanewaypcrepairs.com or Render URL
 
 app.set('trust proxy', true);
+
+// --- Express CORS for REST endpoints (this was the missing piece)
+app.use(cors({
+  origin: ALLOWED_ORIGINS,
+  credentials: true
+}));
+
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- Simple health check (for quick sanity tests)
+// --- Simple health check
 app.get('/health', (req, res) => res.send('ok'));
 
 // Issue short-lived join tokens and QR codes
@@ -44,7 +54,6 @@ app.post('/issue', async (req, res) => {
     const { employeeId, displayName } = req.body || {};
     if (!employeeId) return res.status(400).json({ error: 'employeeId required' });
 
-    // Debug log (safe: no token printed)
     console.log('POST /issue:', { employeeId, displayName });
 
     const token = jwt.sign({ employeeId, displayName }, JWT_SECRET, { expiresIn: '10m' });
@@ -252,5 +261,5 @@ setInterval(() => {
 server.listen(PORT, () => {
   console.log(`Snowball-IO listening on ${PORT}`);
   console.log('PUBLIC_BASE_URL:', PUBLIC_BASE_URL || '(derived from request)');
-  console.log('Allowed CORS origins:', ['https://snowball.lanewaypcrepairs.com', 'http://localhost:3000']);
+  console.log('Allowed CORS origins:', ALLOWED_ORIGINS);
 });
