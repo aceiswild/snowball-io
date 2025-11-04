@@ -1,22 +1,44 @@
-
 import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
 
-const socket = io();
+// If server and page are SAME origin, this is perfect:
+const socket = io(); // allows polling fallback
+
+// If your host page is on a different origin than the server, use this form instead:
+// const socket = io('https://snowball.lanewaypcrepairs.com', { withCredentials: true });
+
 const qs = new URLSearchParams(location.search);
 const token = qs.get('token');
 const statusEl = document.getElementById('status');
 
 if (!token) {
   statusEl.textContent = 'Missing token. Open via QR link.';
-} else {
-  socket.emit('auth:join', { token });
 }
 
-let meId = null;
-let phase = 'lobby';
+// ---- Socket debug + auth on connect ----
+socket.on('connect', () => {
+  console.log('socket connected', socket.id);
+  statusEl.textContent = 'Connected! Authenticating…';
+  if (token) socket.emit('auth:join', { token });
+});
 
+socket.on('disconnect', (reason) => {
+  console.warn('socket disconnected', reason);
+  statusEl.textContent = 'Disconnected: ' + reason;
+});
+
+socket.on('connect_error', (err) => {
+  console.error('connect_error', err);
+  statusEl.textContent = 'Connect error: ' + (err?.message || err);
+});
+
+// See which transport was chosen (polling/websocket)
+socket.io.engine.on('transport', (t) => {
+  console.log('transport', t.name);
+});
+
+// Server responses
 socket.on('you:spawn', (data) => {
-  meId = data.id;
+  window.meId = data.id; // keep available for other handlers
   statusEl.textContent = 'Joined! Waiting for match…';
 });
 
