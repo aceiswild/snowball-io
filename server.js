@@ -139,13 +139,9 @@ function tryStartMatch() {
   if (aliveCount >= MIN_PLAYERS) {
     state.phase = PHASES.COUNTDOWN;
     state.countdown = 3;
-    console.log('Match countdown started');
-    setTimeout(() => (state.countdown = 2), 1000);
-    setTimeout(() => (state.countdown = 1), 2000);
-    setTimeout(() => {
-      state.phase = PHASES.LIVE;
-      console.log('Phase -> LIVE');
-    }, 3000);
+    setTimeout(() => state.countdown = 2, 1000);
+    setTimeout(() => state.countdown = 1, 2000);
+    setTimeout(() => state.phase = PHASES.LIVE, 3000);
   }
 }
 
