@@ -41,9 +41,20 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---- Health & Phase probes
-app.get('/health', (req, res) => res.send('ok'));
-app.get('/phase', (req, res) => {
+app.get('/health', (_req, res) => res.send('ok'));
+app.get('/phase', (_req, res) => {
   res.json({ phase: state.phase, countdown: state.countdown, players: state.players.size });
+});
+
+// Optional: verify a token against current JWT_SECRET
+app.post('/dev/verify', (req, res) => {
+  try {
+    const { token } = req.body || {};
+    const payload = jwt.verify(token, JWT_SECRET);
+    res.json({ ok: true, payload });
+  } catch (e) {
+    res.status(401).json({ ok: false, error: e.message });
+  }
 });
 
 // ---- Issue short-lived join tokens + QR
@@ -128,7 +139,7 @@ function resetMatch() {
 }
 
 // ---- Dev helpers (optional)
-app.post('/dev/force-start', (req, res) => {
+app.post('/dev/force-start', (_req, res) => {
   if ([PHASES.LOBBY, PHASES.COUNTDOWN].includes(state.phase)) {
     state.phase = PHASES.LIVE;
     state.countdown = 0;
@@ -137,7 +148,7 @@ app.post('/dev/force-start', (req, res) => {
   }
   res.json({ ok: false, phase: state.phase });
 });
-app.post('/dev/reset', (req, res) => { resetMatch(); res.json({ ok: true, phase: state.phase }); });
+app.post('/dev/reset', (_req, res) => { resetMatch(); res.json({ ok: true, phase: state.phase }); });
 
 // ---- Sockets
 io.on('connection', (socket) => {
@@ -145,11 +156,12 @@ io.on('connection', (socket) => {
   let player = null;
 
   socket.on('auth:join', ({ token }) => {
-    console.log('auth:join received', !!token);
+    console.log('auth:join received:', !!token, 'socket:', socket.id);
     try {
       const { employeeId, displayName } = jwt.verify(token, JWT_SECRET);
       console.log('auth ok for', employeeId, displayName);
 
+      // ---- SPAWN THE PLAYER (this was missing) ----
       const id = socket.id;
       const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
       player = {
@@ -165,16 +177,15 @@ io.on('connection', (socket) => {
       state.players.set(id, player);
       socket.emit('you:spawn', { id, color, pos: player.pos, name: player.name });
 
-      // Solo-dev convenience: jump straight to LIVE if enabled
+      // Solo dev convenience: start immediately if enabled; else normal flow
       if (DEV_SOLO && state.phase === PHASES.LOBBY) {
         state.phase = PHASES.LIVE;
-        state.countdown = 0;
         console.log('DEV_SOLO: forcing immediate LIVE start');
       } else {
         tryStartMatch();
       }
     } catch (e) {
-      console.error('auth failed', e.message);
+      console.error('auth failed:', e.message);
       socket.emit('error', { message: 'Invalid or expired token' });
       socket.disconnect();
     }
