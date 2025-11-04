@@ -9,6 +9,8 @@ const socket = io('https://snowball-dian.onrender.com', {
 const qs = new URLSearchParams(location.search);
 const token = qs.get('token');
 const statusEl = document.getElementById('status');
+const MIN_PLAYERS = Number(process.env.MIN_PLAYERS || 1); // set 1 for solo dev
+
 
 if (!token) statusEl.textContent = 'Missing token. Open via QR link.';
 
