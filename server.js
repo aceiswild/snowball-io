@@ -9,90 +9,67 @@ import { fileURLToPath } from 'url';
 import cors from 'cors';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname  = path.dirname(__filename);
 
-// ---- Config / Env
-const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL;        // e.g. https://snowball.lanewaypcrepairs.com
-const MIN_PLAYERS   = Number(process.env.MIN_PLAYERS || 1); // 1 for solo dev, 2+ for real rounds
-const DEV_SOLO      = (process.env.DEV_SOLO || 'true') === 'true';
+// ---- Env / Config ----
+const PORT            = process.env.PORT || 3000;
+const JWT_SECRET      = process.env.JWT_SECRET || 'dev-secret';
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/+$/, ''); // e.g. https://snowball.lanewaypcrepairs.com
+const DEV_SOLO        = (process.env.DEV_SOLO || 'true') === 'true';            // allow movement even if not LIVE
+const MIN_PLAYERS     = Number(process.env.MIN_PLAYERS || 1);
 
-// Front-end on HostGator, backend on Render, and local dev
 const ALLOWED_ORIGINS = [
-  'https://snowball.lanewaypcrepairs.com',
-  'https://snowball-dian.onrender.com',
+  'https://snowball.lanewaypcrepairs.com', // HostGator static site
+  'https://snowball-dian.onrender.com',    // Render backend
   'http://localhost:3000'
 ];
 
 const app = express();
 const server = http.createServer(app);
-
-// ---- Socket.IO CORS
 const io = new Server(server, {
-  cors: { origin: ALLOWED_ORIGINS, methods: ['GET','POST'], credentials: true }
+  cors: { origin: ALLOWED_ORIGINS, methods: ['GET', 'POST'], credentials: true }
 });
 
 app.set('trust proxy', true);
-
-// ---- REST CORS
 app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---- Health & Phase probes
+// ---- Health & Phase ----
 app.get('/health', (_req, res) => res.send('ok'));
 app.get('/phase', (_req, res) => {
   res.json({ phase: state.phase, countdown: state.countdown, players: state.players.size });
 });
 
-// Optional: verify a token against current JWT_SECRET
-app.post('/dev/verify', (req, res) => {
-  try {
-    const { token } = req.body || {};
-    const payload = jwt.verify(token, JWT_SECRET);
-    res.json({ ok: true, payload });
-  } catch (e) {
-    res.status(401).json({ ok: false, error: e.message });
-  }
-});
-
-// ---- Issue short-lived join tokens + QR
+// ---- Issue QR (front page calls this) ----
 app.post('/issue', async (req, res) => {
   try {
     const { employeeId, displayName } = req.body || {};
     if (!employeeId) return res.status(400).json({ error: 'employeeId required' });
 
-    console.log('POST /issue:', { employeeId, displayName });
-    const token = jwt.sign({ employeeId, displayName }, JWT_SECRET, { expiresIn: '10m' });
-
+    // base URL for play.html must be the HostGator site so phones land on your static page
     const base = PUBLIC_BASE_URL || `${req.protocol}://${req.get('host')}`;
+    const token = jwt.sign({ employeeId, displayName }, JWT_SECRET, { expiresIn: '10m' });
     const joinUrl = `${base}/play.html?token=${encodeURIComponent(token)}`;
     const qrDataUrl = await QRCode.toDataURL(joinUrl, { margin: 1, scale: 8 });
 
     res.json({ joinUrl, qrDataUrl });
   } catch (err) {
-    console.error('Error in /issue:', err?.message || err);
+    console.error('Error in /issue:', err?.stack || err);
     res.status(500).json({ error: 'Failed to issue QR' });
   }
 });
 
-// ---------------- Game State ----------------
-const TICKRATE = 30;
-const SNAPSHOT_RATE = 18;
-const ARENA_RADIUS = 25;
-const MOVE_SPEED = 7;
-const THROW_COOLDOWN_MS = 600;
-const SNOWBALL_SPEED = 24;
-const SNOWBALL_LIFETIME = 1800;
-const HIT_RADIUS = 1.2;
-
+// ---- Game State ----
 const PHASES = { LOBBY: 'lobby', COUNTDOWN: 'countdown', LIVE: 'live', ENDED: 'ended' };
+const TICKRATE = 30, SNAPSHOT_RATE = 18;
+const ARENA_RADIUS = 25, MOVE_SPEED = 7;
+const THROW_COOLDOWN_MS = 600, SNOWBALL_SPEED = 24, SNOWBALL_LIFETIME = 1800, HIT_RADIUS = 1.2;
 
 const state = {
   phase: PHASES.LOBBY,
   countdown: 0,
-  players: new Map(),   // id -> player
+  players: new Map(), // id -> { ... }
   snowballs: []
 };
 
@@ -101,98 +78,58 @@ function randSpawn() {
   const r = ARENA_RADIUS * 0.7 * Math.random();
   return [Math.cos(a) * r, 0, Math.sin(a) * r];
 }
-function clampArena([x, y, z]) {
-  const d = Math.hypot(x, z);
-  if (d > ARENA_RADIUS) {
-    const s = ARENA_RADIUS / d;
-    return [x * s, y, z * s];
-  }
-  return [x, y, z];
+function clampArena([x,y,z]) {
+  const d = Math.hypot(x,z);
+  if (d > ARENA_RADIUS) { const s = ARENA_RADIUS / d; return [x*s, y, z*s]; }
+  return [x,y,z];
 }
-
 function tryStartMatch() {
   if (state.phase !== PHASES.LOBBY) return;
-  const aliveCount = [...state.players.values()].length;
+  const aliveCount = state.players.size;
   if (aliveCount >= MIN_PLAYERS) {
     state.phase = PHASES.COUNTDOWN;
     state.countdown = 3;
-    console.log('Match countdown started');
-    setTimeout(() => (state.countdown = 2), 1000);
-    setTimeout(() => (state.countdown = 1), 2000);
-    setTimeout(() => {
-      state.phase = PHASES.LIVE;
-      console.log('Phase -> LIVE');
-    }, 3000);
+    setTimeout(() => state.countdown = 2, 1000);
+    setTimeout(() => state.countdown = 1, 2000);
+    setTimeout(() => state.phase = PHASES.LIVE, 3000);
   }
 }
-
 function resetMatch() {
-  console.log('Resetting match');
   state.phase = PHASES.LOBBY;
   state.countdown = 0;
   state.snowballs.length = 0;
   for (const p of state.players.values()) {
-    p.alive = true;
-    p.pos = randSpawn();
-    p.lastThrow = 0;
+    p.alive = true; p.pos = randSpawn(); p.lastThrow = 0;
   }
 }
 
-// ---- Dev helpers (optional)
+// Optional dev endpoints
 app.post('/dev/force-start', (_req, res) => {
-  if ([PHASES.LOBBY, PHASES.COUNTDOWN].includes(state.phase)) {
-    state.phase = PHASES.LIVE;
-    state.countdown = 0;
-    console.log('Dev force-start: phase -> LIVE');
-    return res.json({ ok: true, phase: state.phase });
-  }
-  res.json({ ok: false, phase: state.phase });
+  state.phase = PHASES.LIVE; state.countdown = 0;
+  res.json({ ok: true, phase: state.phase });
 });
-app.post('/dev/reset', (_req, res) => { resetMatch(); res.json({ ok: true, phase: state.phase }); });
+app.post('/dev/reset', (_req, res) => { resetMatch(); res.json({ ok: true }); });
 
-// ---- Sockets
+// ---- Sockets ----
 io.on('connection', (socket) => {
-  console.log('socket connected', socket.id);
   let player = null;
 
   socket.on('auth:join', ({ token }) => {
-    console.log('auth:join received:', !!token, 'socket:', socket.id);
     try {
       const { employeeId, displayName } = jwt.verify(token, JWT_SECRET);
-      console.log('auth ok for', employeeId, displayName);
-
       const id = socket.id;
-      const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
+      const color = `hsl(${Math.floor(Math.random()*360)} 70% 55%)`;
       player = {
-        id,
-        name: displayName || String(employeeId),
-        color,
-        pos: randSpawn(),
-        yaw: 0,
-        alive: true,
-        lastThrow: 0,
-        input: { fwd: 0, back: 0, left: 0, right: 0 }
+        id, name: displayName || String(employeeId), color,
+        pos: randSpawn(), yaw: 0, alive: true, lastThrow: 0,
+        input: { fwd:0, back:0, left:0, right:0 }
       };
-
       state.players.set(id, player);
-      console.log('player added. total players:', state.players.size);
+      socket.emit('you:spawn', { id, color, pos: player.pos, name: player.name });
 
-      socket.emit('you:spawn', {
-        id: player.id,
-        color: player.color,
-        pos: player.pos,
-        name: player.name
-      });
-
-      if (DEV_SOLO && state.phase === PHASES.LOBBY) {
-        state.phase = PHASES.LIVE;
-        state.countdown = 0;
-        console.log('DEV_SOLO enabled -> phase set to LIVE');
-      } else {
-        tryStartMatch();
-      }
+      if (DEV_SOLO && state.phase === PHASES.LOBBY) state.phase = PHASES.LIVE;
+      else tryStartMatch();
     } catch (e) {
-      console.error('auth failed:', e.message);
       socket.emit('error', { message: 'Invalid or expired token' });
       socket.disconnect();
     }
@@ -209,30 +146,27 @@ io.on('connection', (socket) => {
   socket.on('action:throw', ({ dir }) => {
     if (!player || !player.alive) return;
     if (!DEV_SOLO && state.phase !== PHASES.LIVE) return;
-
     const now = Date.now();
     if (now - player.lastThrow < THROW_COOLDOWN_MS) return;
     player.lastThrow = now;
 
-    const d = Array.isArray(dir) ? dir : [0, 0, -1];
+    const d = Array.isArray(dir) ? dir : [0,0,-1];
     const len = Math.hypot(d[0], d[1], d[2]) || 1;
-    const n = [d[0] / len, d[1] / len, d[2] / len];
+    const n = [d[0]/len, d[1]/len, d[2]/len];
 
     state.snowballs.push({
       id: `${socket.id}:${now}`,
       ownerId: player.id,
       pos: [player.pos[0], player.pos[1] + 1.0, player.pos[2]],
-      vel: [n[0] * SNOWBALL_SPEED, n[1] * SNOWBALL_SPEED, n[2] * SNOWBALL_SPEED],
+      vel: [n[0]*SNOWBALL_SPEED, n[1]*SNOWBALL_SPEED, n[2]*SNOWBALL_SPEED],
       bornAt: now
     });
   });
 
   socket.on('disconnect', () => {
-    console.log('socket disconnected', socket.id);
     if (player) {
       state.players.delete(player.id);
-      console.log('player removed. total players:', state.players.size);
-      const alive = [...state.players.values()].filter((p) => p.alive).length;
+      const alive = [...state.players.values()].filter(p => p.alive).length;
       if (alive < 2 && state.phase !== PHASES.LOBBY) {
         state.phase = PHASES.ENDED;
         setTimeout(resetMatch, 1500);
@@ -241,13 +175,11 @@ io.on('connection', (socket) => {
   });
 });
 
-
-
-// ---- Physics loop
+// ---- Physics loop ----
 let lastTick = Date.now();
 setInterval(() => {
   const now = Date.now();
-  const dt = Math.min(0.05, (now - lastTick) / 1000);
+  const dt  = Math.min(0.05, (now - lastTick)/1000);
   lastTick = now;
 
   if (state.phase === PHASES.LIVE || DEV_SOLO) {
@@ -258,16 +190,14 @@ setInterval(() => {
       if (p.input.back) vz += 1;
       if (p.input.left) vx -= 1;
       if (p.input.right)vx += 1;
-      const mag = Math.hypot(vx, vz) || 1;
-      vx /= mag; vz /= mag;
+      const mag = Math.hypot(vx, vz) || 1; vx/=mag; vz/=mag;
       p.pos[0] += vx * MOVE_SPEED * dt;
       p.pos[2] += vz * MOVE_SPEED * dt;
       p.pos = clampArena(p.pos);
     }
   }
 
-  // Snowball sim + hits
-  state.snowballs = state.snowballs.filter((sb) => now - sb.bornAt < SNOWBALL_LIFETIME);
+  state.snowballs = state.snowballs.filter(sb => (now - sb.bornAt) < SNOWBALL_LIFETIME);
   for (const sb of state.snowballs) {
     sb.pos[0] += sb.vel[0] * dt;
     sb.pos[1] += sb.vel[1] * dt;
@@ -275,16 +205,13 @@ setInterval(() => {
     if (sb.pos[1] < 0) sb.pos[1] = 0;
     for (const p of state.players.values()) {
       if (!p.alive || p.id === sb.ownerId) continue;
-      const d = Math.hypot(p.pos[0] - sb.pos[0], p.pos[2] - sb.pos[2]);
-      if (d < HIT_RADIUS) {
-        p.alive = false;
-        io.emit('game:eliminated', { id: p.id });
-      }
+      const d = Math.hypot(p.pos[0]-sb.pos[0], p.pos[2]-sb.pos[2]);
+      if (d < HIT_RADIUS) { p.alive = false; io.emit('game:eliminated', { id: p.id }); }
     }
   }
 
   if (state.phase === PHASES.LIVE) {
-    const alive = [...state.players.values()].filter((p) => p.alive);
+    const alive = [...state.players.values()].filter(p=>p.alive);
     if (alive.length <= 1) {
       state.phase = PHASES.ENDED;
       io.emit('game:winner', { id: alive[0]?.id || null, name: alive[0]?.name || null });
@@ -293,25 +220,22 @@ setInterval(() => {
   }
 }, 1000 / TICKRATE);
 
-// ---- Snapshots
+// ---- Snapshots ----
 setInterval(() => {
-  const players = [...state.players.values()].map((p) => ({
+  const players = [...state.players.values()].map(p => ({
     id: p.id, name: p.name, color: p.color, pos: p.pos, yaw: p.yaw, alive: p.alive
   }));
-  const snowballs = state.snowballs.map((s) => ({ id: s.id, pos: s.pos }));
+  const snowballs = state.snowballs.map(s => ({ id: s.id, pos: s.pos }));
   io.emit('world:state', {
     phase: state.phase,
     countdown: state.countdown,
-    players,
-    snowballs,
+    players, snowballs,
     arena: { radius: ARENA_RADIUS }
   });
 }, 1000 / SNAPSHOT_RATE);
 
-// ---- Start server
 server.listen(PORT, () => {
-  console.log(`Snowball-IO listening on ${PORT}`);
-  console.log('PUBLIC_BASE_URL:', PUBLIC_BASE_URL || '(derived from request)');
-  console.log('Allowed CORS origins:', ALLOWED_ORIGINS);
-  console.log('MIN_PLAYERS:', MIN_PLAYERS, 'DEV_SOLO:', DEV_SOLO);
+  console.log('Snowball-IO listening on', PORT);
+  console.log('PUBLIC_BASE_URL:', PUBLIC_BASE_URL || '(derived)');
+  console.log('DEV_SOLO:', DEV_SOLO, 'MIN_PLAYERS:', MIN_PLAYERS);
 });
