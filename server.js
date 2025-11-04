@@ -14,9 +14,9 @@ const __dirname = path.dirname(__filename);
 // ---- Config / Env
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL; // e.g. https://snowball.lanewaypcrepairs.com or Render URL
-const MIN_PLAYERS = Number(process.env.MIN_PLAYERS || 1);   // 1 for solo testing, 2+ for real matches
-const DEV_SOLO = (process.env.DEV_SOLO || 'true') === 'true'; // default true so you can test right away
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL;        // e.g. https://snowball.lanewaypcrepairs.com
+const MIN_PLAYERS   = Number(process.env.MIN_PLAYERS || 1); // 1 for solo dev, 2+ for real rounds
+const DEV_SOLO      = (process.env.DEV_SOLO || 'true') === 'true';
 
 // Front-end on HostGator, backend on Render, and local dev
 const ALLOWED_ORIGINS = [
@@ -30,11 +30,7 @@ const server = http.createServer(app);
 
 // ---- Socket.IO CORS
 const io = new Server(server, {
-  cors: {
-    origin: ALLOWED_ORIGINS,
-    methods: ['GET', 'POST'],
-    credentials: true
-  }
+  cors: { origin: ALLOWED_ORIGINS, methods: ['GET','POST'], credentials: true }
 });
 
 app.set('trust proxy', true);
@@ -44,8 +40,11 @@ app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---- Health
+// ---- Health & Phase probes
 app.get('/health', (req, res) => res.send('ok'));
+app.get('/phase', (req, res) => {
+  res.json({ phase: state.phase, countdown: state.countdown, players: state.players.size });
+});
 
 // ---- Issue short-lived join tokens + QR
 app.post('/issue', async (req, res) => {
@@ -103,7 +102,6 @@ function clampArena([x, y, z]) {
 function tryStartMatch() {
   if (state.phase !== PHASES.LOBBY) return;
   const aliveCount = [...state.players.values()].length;
-
   if (aliveCount >= MIN_PLAYERS) {
     state.phase = PHASES.COUNTDOWN;
     state.countdown = 3;
@@ -139,11 +137,7 @@ app.post('/dev/force-start', (req, res) => {
   }
   res.json({ ok: false, phase: state.phase });
 });
-
-app.post('/dev/reset', (req, res) => {
-  resetMatch();
-  res.json({ ok: true, phase: state.phase });
-});
+app.post('/dev/reset', (req, res) => { resetMatch(); res.json({ ok: true, phase: state.phase }); });
 
 // ---- Sockets
 io.on('connection', (socket) => {
@@ -174,6 +168,7 @@ io.on('connection', (socket) => {
       // Solo-dev convenience: jump straight to LIVE if enabled
       if (DEV_SOLO && state.phase === PHASES.LOBBY) {
         state.phase = PHASES.LIVE;
+        state.countdown = 0;
         console.log('DEV_SOLO: forcing immediate LIVE start');
       } else {
         tryStartMatch();
@@ -185,15 +180,19 @@ io.on('connection', (socket) => {
     }
   });
 
+  // In DEV_SOLO we allow actions in any phase; in normal mode we gate on LIVE.
   socket.on('input:state', (data) => {
-    if (!player || !player.alive || state.phase !== PHASES.LIVE) return;
+    if (!player || !player.alive) return;
+    if (!DEV_SOLO && state.phase !== PHASES.LIVE) return;
     const { fwd, back, left, right, yaw } = data || {};
     player.input = { fwd: !!fwd, back: !!back, left: !!left, right: !!right };
     if (Number.isFinite(yaw)) player.yaw = yaw;
   });
 
   socket.on('action:throw', ({ dir }) => {
-    if (!player || !player.alive || state.phase !== PHASES.LIVE) return;
+    if (!player || !player.alive) return;
+    if (!DEV_SOLO && state.phase !== PHASES.LIVE) return;
+
     const now = Date.now();
     if (now - player.lastThrow < THROW_COOLDOWN_MS) return;
     player.lastThrow = now;
@@ -231,14 +230,14 @@ setInterval(() => {
   const dt = Math.min(0.05, (now - lastTick) / 1000);
   lastTick = now;
 
-  if (state.phase === PHASES.LIVE) {
+  if (state.phase === PHASES.LIVE || DEV_SOLO) {
     for (const p of state.players.values()) {
       if (!p.alive) continue;
       let vx = 0, vz = 0;
-      if (p.input.fwd) vz -= 1;
+      if (p.input.fwd)  vz -= 1;
       if (p.input.back) vz += 1;
       if (p.input.left) vx -= 1;
-      if (p.input.right) vx += 1;
+      if (p.input.right)vx += 1;
       const mag = Math.hypot(vx, vz) || 1;
       vx /= mag; vz /= mag;
       p.pos[0] += vx * MOVE_SPEED * dt;
