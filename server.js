@@ -11,6 +11,7 @@ import cors from 'cors'; // <-- NEW
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const MIN_PLAYERS = Number(process.env.MIN_PLAYERS || 1);
+const DEV_SOLO     = (process.env.DEV_SOLO || 'true') === 'true'; // force-start helper
 
 const app = express();
 const server = http.createServer(app);
@@ -105,15 +106,20 @@ function clampArena([x,y,z]) {
 function tryStartMatch() {
   if (state.phase !== PHASES.LOBBY) return;
   const aliveCount = [...state.players.values()].length;
+
   if (aliveCount >= MIN_PLAYERS) {
     state.phase = PHASES.COUNTDOWN;
     state.countdown = 3;
+    console.log('Match countdown started');
     setTimeout(() => state.countdown = 2, 1000);
     setTimeout(() => state.countdown = 1, 2000);
-    setTimeout(() => state.phase = PHASES.LIVE, 3000);
-    console.log('Match countdown started');
+    setTimeout(() => {
+      state.phase = PHASES.LIVE;
+      console.log('Phase -> LIVE');
+    }, 3000);
   }
 }
+
 
 
 function resetMatch() {
@@ -133,6 +139,15 @@ io.on('connection', (socket) => {
   let player = null;
 
   socket.on('auth:join', ({ token }) => {
+  // after: state.players.set(id, player); socket.emit('you:spawn', ...);
+  if (DEV_SOLO && state.phase === PHASES.LOBBY) {
+    // Start immediately in solo mode
+    console.log('DEV_SOLO: forcing immediate LIVE start');
+    state.phase = PHASES.LIVE;
+  }
+  tryStartMatch();
+
+    
     console.log('auth:join received', !!token);
     try {
       const { employeeId, displayName } = jwt.verify(token, JWT_SECRET);
