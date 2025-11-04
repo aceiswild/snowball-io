@@ -101,10 +101,11 @@ function clampArena([x,y,z]) {
   return [x,y,z];
 }
 
+const MIN_PLAYERS = Number(process.env.MIN_PLAYERS || 1); // 👈 add this near the top of the file with other constants
 function tryStartMatch() {
   if (state.phase !== PHASES.LOBBY) return;
   const aliveCount = [...state.players.values()].length;
-  if (aliveCount >= 2) {
+  if (aliveCount >= MIN_PLAYERS) {
     state.phase = PHASES.COUNTDOWN;
     state.countdown = 3;
     setTimeout(() => state.countdown = 2, 1000);
@@ -113,6 +114,7 @@ function tryStartMatch() {
     console.log('Match countdown started');
   }
 }
+
 function resetMatch() {
   console.log('Resetting match');
   state.phase = PHASES.LOBBY;
