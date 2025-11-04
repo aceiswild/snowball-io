@@ -161,7 +161,6 @@ io.on('connection', (socket) => {
       const { employeeId, displayName } = jwt.verify(token, JWT_SECRET);
       console.log('auth ok for', employeeId, displayName);
 
-      // ---- SPAWN THE PLAYER (this was missing) ----
       const id = socket.id;
       const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
       player = {
@@ -174,13 +173,23 @@ io.on('connection', (socket) => {
         lastThrow: 0,
         input: { fwd: 0, back: 0, left: 0, right: 0 }
       };
-      state.players.set(id, player);
-      socket.emit('you:spawn', { id, color, pos: player.pos, name: player.name });
 
-      // Solo dev convenience: start immediately if enabled; else normal flow
+      state.players.set(id, player);
+      console.log('player added. total players:', state.players.size);
+
+      // Tell the client it spawned
+      socket.emit('you:spawn', {
+        id: player.id,
+        color: player.color,
+        pos: player.pos,
+        name: player.name
+      });
+
+      // Start match logic
       if (DEV_SOLO && state.phase === PHASES.LOBBY) {
         state.phase = PHASES.LIVE;
-        console.log('DEV_SOLO: forcing immediate LIVE start');
+        state.countdown = 0;
+        console.log('DEV_SOLO enabled -> phase set to LIVE');
       } else {
         tryStartMatch();
       }
@@ -191,7 +200,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // In DEV_SOLO we allow actions in any phase; in normal mode we gate on LIVE.
   socket.on('input:state', (data) => {
     if (!player || !player.alive) return;
     if (!DEV_SOLO && state.phase !== PHASES.LIVE) return;
@@ -225,6 +233,7 @@ io.on('connection', (socket) => {
     console.log('socket disconnected', socket.id);
     if (player) {
       state.players.delete(player.id);
+      console.log('player removed. total players:', state.players.size);
       const alive = [...state.players.values()].filter((p) => p.alive).length;
       if (alive < 2 && state.phase !== PHASES.LOBBY) {
         state.phase = PHASES.ENDED;
@@ -233,6 +242,7 @@ io.on('connection', (socket) => {
     }
   });
 });
+
 
 // ---- Physics loop
 let lastTick = Date.now();
