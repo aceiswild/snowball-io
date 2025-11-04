@@ -115,6 +115,7 @@ function tryStartMatch() {
   }
 }
 
+
 function resetMatch() {
   console.log('Resetting match');
   state.phase = PHASES.LOBBY;
