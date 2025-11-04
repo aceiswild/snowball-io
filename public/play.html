@@ -1,25 +1,103 @@
-
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Snowball‑IO</title>
+  <title>Snowball Render Debug</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    html,body{margin:0;height:100%;overflow:hidden;background:#e9f2ff}
-    #overlay{position:fixed;top:10px;left:10px;background:#ffffffcc;padding:8px 12px;border-radius:8px;font-family:system-ui}
-    #status{font-weight:600}
-    canvas{display:block}
-  </style>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#d7ecff !important}
+  canvas{
+    position:fixed !important; inset:0 !important; width:100% !important; height:100% !important;
+    display:block !important; background:#d7ecff !important; z-index:2147483647 !important;
+  }
+  #status{
+    position:fixed; left:12px; top:10px; z-index:2147483647;
+    padding:6px 10px; background:#134a9e; color:#fff; border-radius:8px; font:14px system-ui;
+    pointer-events:none; user-select:none; max-width:60vw;
+  }
+  /* Defang any full-screen wrappers */
+  body > :not(canvas):not(#status){
+    position:static !important;
+    background:transparent !important;
+  }
+</style>
+
 </head>
 <body>
-  <div id="overlay">
-    <div id="status">Connecting…</div>
-    <div>WASD to move, click to throw</div>
-  </div>
-  <script src="/socket.io/socket.io.js"></script>
-  <!-- Use CDN for Three.js so you don't have to host the file -->
-  <script src="https://unpkg.com/three@0.157.0/build/three.min.js"></script>
-  <script src="./client.js" type="module"></script>
+  <div id="status">Debug mode…</div>
+  <script type="module">
+    import * as THREE from 'https://unpkg.com/three@0.157.0/build/three.module.js';
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:false, powerPreference:'high-performance' });
+    renderer.setPixelRatio(window.devicePixelRatio||1);
+    renderer.setClearColor(0xd7ecff, 1);
+    renderer.setSize(innerWidth, innerHeight);
+    document.body.appendChild(renderer.domElement);
+    const cvs = renderer.domElement;
+
+    // Top-of-stack guard
+    Object.assign(cvs.style, { position:'fixed', inset:'0', width:'100%', height:'100%',
+      display:'block', zIndex:'2147483647', background:'#d7ecff' });
+
+    const statusEl = document.getElementById('status');
+
+    // Context loss visibility
+    cvs.addEventListener('webglcontextlost', e => { e.preventDefault(); statusEl.textContent='WebGL context lost'; });
+    cvs.addEventListener('webglcontextrestored', () => { statusEl.textContent='WebGL restored'; });
+
+    // Scene
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xd7ecff);
+    scene.fog = new THREE.Fog(0xd7ecff, 30, 90);
+
+    const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 200);
+    camera.position.set(0,3,8);
+    camera.lookAt(0,0,0);
+
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x88aaff, 0.9);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+    dir.position.set(10,20,10);
+    scene.add(dir);
+
+    const ground = new THREE.Mesh(
+      new THREE.CircleGeometry(25,64),
+      new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.9 })
+    );
+    ground.rotation.x = -Math.PI/2;
+    scene.add(ground);
+
+    const grid = new THREE.GridHelper(60,30,0x88aaff,0xbbccff);
+    grid.position.y = 0.001;
+    scene.add(grid);
+
+    const cube = new THREE.Mesh(new THREE.BoxGeometry(1,1,1), new THREE.MeshNormalMaterial());
+    cube.position.set(0,1.2,0);
+    scene.add(cube);
+
+    window.addEventListener('resize', () => {
+      renderer.setSize(innerWidth, innerHeight);
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+    });
+
+    // Report topmost elements at center (catch overlays)
+    function reportTopmost(tag) {
+      const els = document.elementsFromPoint(innerWidth/2, innerHeight/2);
+      console.log(tag, els.slice(0,8).map(e => ({tag:e.tagName, id:e.id, cls:e.className, z:getComputedStyle(e).zIndex})));
+      statusEl.textContent = tag + ': top=' + (els[0]?.tagName || 'none');
+    }
+    setTimeout(()=>reportTopmost('t+100ms'),100);
+    setTimeout(()=>reportTopmost('t+1000ms'),1000);
+
+    function animate(){
+      requestAnimationFrame(animate);
+      cube.rotation.y += 0.02;
+      cube.rotation.x += 0.01;
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
 </body>
 </html>
