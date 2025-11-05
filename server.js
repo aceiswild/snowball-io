@@ -9,44 +9,37 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import cors from 'cors';
 
-// ---- ESM dirname helpers
+// --- __dirname shim for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// ---- Config / Env
+// --- Config / Env
 const PORT            = process.env.PORT || 3000;
 const JWT_SECRET      = process.env.JWT_SECRET || 'dev-secret';
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || '';
-const MIN_PLAYERS     = Number(process.env.MIN_PLAYERS || 1);   // 1 for solo testing, 2+ for real rounds
-const DEV_SOLO        = (process.env.DEV_SOLO || 'true') === 'true';
+const MIN_PLAYERS     = Number(process.env.MIN_PLAYERS || 1);     // keep 1 while debugging
+const DEV_SOLO        = (process.env.DE_SOLO || process.env.DEV_SOLO || 'true') === 'true';
 
-// ---- Allowed frontends (HostGator, Render, local dev)
+// --- CORS (HostGator page, Render backend, local dev)
 const ALLOWED_ORIGINS = [
   'https://snowball.lanewaypcrepairs.com',
   'https://snowball-dian.onrender.com',
-  'http://localhost:3000'
+  'http://localhost:3000',
 ];
 
-const app = express();
+// --- App + Socket
+const app    = express();
 const server = http.createServer(app);
-
-// ---- Socket.IO (CORS)
-const io = new Server(server, {
-  cors: {
-    origin: ALLOWED_ORIGINS,
-    methods: ['GET', 'POST'],
-    credentials: true
-  }
+const io     = new Server(server, {
+  cors: { origin: ALLOWED_ORIGINS, methods: ['GET','POST'], credentials: true }
 });
 
 app.set('trust proxy', true);
-
-// ---- Middleware
 app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---- Health & Phase probes
+// --- Health & Phase probes
 app.get('/health', (_req, res) => res.send('ok'));
 app.get('/phase', (_req, res) => {
   res.json({
@@ -54,23 +47,23 @@ app.get('/phase', (_req, res) => {
     countdown: state.countdown,
     players: state.players.size,
     devSolo: DEV_SOLO,
-    minPlayers: MIN_PLAYERS
+    minPlayers: MIN_PLAYERS,
   });
 });
 
-// ---- Issue short-lived join tokens + QR (for admin/QR flow)
+// --- Issue short-lived join tokens + QR
 app.post('/issue', async (req, res) => {
   try {
     const { employeeId, displayName } = req.body || {};
     if (!employeeId) return res.status(400).json({ error: 'employeeId required' });
 
-    // Determine public base (prefer env; else derive from headers)
+    // Resolve public base (prefer env; else derive from request)
     const forwardedProto = (req.headers['x-forwarded-proto'] || '').split(',')[0];
     const forwardedHost  = (req.headers['x-forwarded-host']  || '').split(',')[0];
     const scheme = forwardedProto || req.protocol;
     const host   = forwardedHost  || req.get('host');
-    const baseRaw = PUBLIC_BASE_URL || (scheme && host ? `${scheme}://${host}` : '');
-    const base = String(baseRaw).replace(/\/+$/, '');
+    const base   = (PUBLIC_BASE_URL || (scheme && host ? `${scheme}://${host}` : '')).replace(/\/+$/, '');
+
     if (!base) return res.status(500).json({ error: 'Server misconfigured: PUBLIC_BASE_URL missing' });
 
     const token    = jwt.sign({ employeeId, displayName }, JWT_SECRET, { expiresIn: '10m' });
@@ -84,31 +77,15 @@ app.post('/issue', async (req, res) => {
   }
 });
 
-// ---- Guest token for mobile "enter your name" flow
-app.post('/guest/issue', (req, res) => {
-  try {
-    const { displayName } = req.body || {};
-    if (!displayName || !displayName.trim()) {
-      return res.status(400).json({ error: 'displayName required' });
-    }
-    const employeeId = `GUEST-${Math.random().toString(36).slice(2, 7)}`;
-    const token = jwt.sign({ employeeId, displayName: displayName.trim() }, JWT_SECRET, { expiresIn: '2h' });
-    res.json({ token });
-  } catch (err) {
-    console.error('Error in /guest/issue:', err?.message || err);
-    res.status(500).json({ error: 'Failed to issue guest token' });
-  }
-});
-
 // ---------------- Game State ----------------
-const TICKRATE         = 30;
-const SNAPSHOT_RATE    = 18;
-const ARENA_RADIUS     = 25;
-const MOVE_SPEED       = 7;
-const THROW_COOLDOWN_MS= 600;
-const SNOWBALL_SPEED   = 24;
-const SNOWBALL_LIFETIME= 1800;
-const HIT_RADIUS       = 1.2;
+const TICKRATE          = 30;
+const SNAPSHOT_RATE     = 18;
+const ARENA_RADIUS      = 25;
+const MOVE_SPEED        = 7;
+const THROW_COOLDOWN_MS = 600;
+const SNOWBALL_SPEED    = 24;
+const SNOWBALL_LIFETIME = 1800;
+const HIT_RADIUS        = 1.2;
 
 const PHASES = { LOBBY: 'lobby', COUNTDOWN: 'countdown', LIVE: 'live', ENDED: 'ended' };
 
@@ -116,9 +93,10 @@ const state = {
   phase: PHASES.LOBBY,
   countdown: 0,
   players: new Map(), // id -> player
-  snowballs: []
+  snowballs: [],
 };
 
+// --- Helpers
 function randSpawn() {
   const a = Math.random() * Math.PI * 2;
   const r = ARENA_RADIUS * 0.7 * Math.random();
@@ -134,19 +112,26 @@ function clampArena([x, y, z]) {
 }
 
 function tryStartMatch() {
+  const aliveCount = state.players.size;
+  console.log('[tryStartMatch] phase:', state.phase, 'players:', aliveCount, 'MIN_PLAYERS:', MIN_PLAYERS, 'DEV_SOLO:', DEV_SOLO);
+
   if (state.phase !== PHASES.LOBBY) return;
-  const aliveCount = [...state.players.values()].length;
-  if (aliveCount >= MIN_PLAYERS) {
+
+  // Start quickly for dev; otherwise require MIN_PLAYERS
+  if (DEV_SOLO || aliveCount >= MIN_PLAYERS) {
     state.phase = PHASES.COUNTDOWN;
-    state.countdown = 3;
-    setTimeout(() => state.countdown = 2, 1000);
-    setTimeout(() => state.countdown = 1, 2000);
-    setTimeout(() => state.phase = PHASES.LIVE, 3000);
+    state.countdown = 1;
+    console.log('[tryStartMatch] -> COUNTDOWN (1s)');
+    setTimeout(() => {
+      state.phase = PHASES.LIVE;
+      state.countdown = 0;
+      console.log('[tryStartMatch] -> LIVE');
+    }, 1000);
   }
 }
 
 function resetMatch() {
-  console.log('Resetting match');
+  console.log('[resetMatch] resetting');
   state.phase = PHASES.LOBBY;
   state.countdown = 0;
   state.snowballs.length = 0;
@@ -157,63 +142,110 @@ function resetMatch() {
   }
 }
 
-// ---- Dev helpers
-app.post('/dev/force-start', (_req, res) => {
-  if ([PHASES.LOBBY, PHASES.COUNTDOWN].includes(state.phase)) {
-    state.phase = PHASES.LIVE;
-    state.countdown = 0;
-    console.log('Dev force-start: phase -> LIVE');
-    return res.json({ ok: true, phase: state.phase });
-  }
-  res.json({ ok: false, phase: state.phase });
-});
-app.post('/dev/reset', (_req, res) => { resetMatch(); res.json({ ok: true, phase: state.phase }); });
+// --- (Optional) Simple bot so you always have an opponent
+function addBot(name = 'BOT') {
+  const id = 'bot-' + Math.random().toString(36).slice(2, 8);
+  const color = `hsl(${Math.floor(Math.random()*360)} 70% 55%)`;
+  const bot = {
+    id, name, color,
+    pos: randSpawn(),
+    yaw: 0,
+    alive: true,
+    lastThrow: 0,
+    input: { fwd: false, back: false, left: false, right: false },
+    isBot: true,
+  };
+  state.players.set(id, bot);
+  console.log('[bot] added', id);
 
-// ---- Sockets
+  // Tiny AI movement pulse
+  setInterval(() => {
+    if (!bot.alive) return;
+    bot.input = {
+      fwd:  Math.random() < 0.6,
+      back: false,
+      left: Math.random() < 0.5,
+      right: Math.random() >= 0.5,
+    };
+  }, 600);
+
+  // Occasional throws
+  setInterval(() => {
+    if (!bot.alive || state.phase !== PHASES.LIVE) return;
+    const now = Date.now();
+    if (now - bot.lastThrow < THROW_COOLDOWN_MS) return;
+    bot.lastThrow = now;
+    // random forward-ish lob
+    const dir = [Math.random()*0.6-0.3, 0, -1];
+    const len = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+    const n = [dir[0]/len, dir[1]/len, dir[2]/len];
+    state.snowballs.push({
+      id: `${id}:${now}`,
+      ownerId: id,
+      pos: [bot.pos[0], bot.pos[1] + 1.0, bot.pos[2]],
+      vel: [n[0]*SNOWBALL_SPEED, n[1]*SNOWBALL_SPEED, n[2]*SNOWBALL_SPEED],
+      bornAt: now,
+    });
+  }, 900 + Math.random()*600);
+
+  return id;
+}
+
+// Dev endpoints (optional)
+app.post('/dev/add-bot', (_req, res) => {
+  const id = addBot();
+  tryStartMatch();
+  res.json({ ok: true, bot: id, players: state.players.size });
+});
+app.post('/dev/reset', (_req, res) => { resetMatch(); res.json({ ok: true }); });
+
+// --- Sockets
 io.on('connection', (socket) => {
-  console.log('socket connected', socket.id);
+  console.log('[socket] connected', socket.id);
   let player = null;
 
   socket.on('auth:join', ({ token }) => {
     try {
       const { employeeId, displayName } = jwt.verify(token, JWT_SECRET);
-      const id = socket.id;
+
+      const id    = socket.id;
       const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
       player = {
         id,
-        name: displayName || String(employeeId),
+        name: displayName || String(employeeId || 'Player'),
         color,
         pos: randSpawn(),
         yaw: 0,
         alive: true,
         lastThrow: 0,
-        input: { fwd: 0, back: 0, left: 0, right: 0 }
+        input: { fwd: 0, back: 0, left: 0, right: 0 },
       };
+
       state.players.set(id, player);
       socket.emit('you:spawn', { id, color, pos: player.pos, name: player.name });
+      console.log('[auth:join] spawn ->', player.name, id);
 
-      // Solo-dev convenience
-      if (DEV_SOLO && state.phase === PHASES.LOBBY) {
-        state.phase = PHASES.LIVE;
-        console.log('DEV_SOLO: forcing immediate LIVE start');
-      } else {
-        tryStartMatch();
-      }
+      // Always attempt to start a round (safe if already started)
+      tryStartMatch();
+
     } catch (e) {
-      console.error('auth failed', e.message);
+      console.error('[auth failed]', e.message);
       socket.emit('error', { message: 'Invalid or expired token' });
       socket.disconnect();
     }
   });
 
+  // Inputs: allowed in LIVE; if DEV_SOLO, we still process movement so solo feels alive
   socket.on('input:state', (data) => {
     if (!player || !player.alive) return;
     if (!DEV_SOLO && state.phase !== PHASES.LIVE) return;
+
     const { fwd, back, left, right, yaw } = data || {};
     player.input = { fwd: !!fwd, back: !!back, left: !!left, right: !!right };
     if (Number.isFinite(yaw)) player.yaw = yaw;
   });
 
+  // Throws: only in LIVE unless DEV_SOLO
   socket.on('action:throw', ({ dir }) => {
     if (!player || !player.alive) return;
     if (!DEV_SOLO && state.phase !== PHASES.LIVE) return;
@@ -224,21 +256,22 @@ io.on('connection', (socket) => {
 
     const d = Array.isArray(dir) ? dir : [0, 0, -1];
     const len = Math.hypot(d[0], d[1], d[2]) || 1;
-    const n = [d[0] / len, d[1] / len, d[2] / len];
+    const n = [d[0]/len, d[1]/len, d[2]/len];
 
     state.snowballs.push({
       id: `${socket.id}:${now}`,
       ownerId: player.id,
       pos: [player.pos[0], player.pos[1] + 1.0, player.pos[2]],
-      vel: [n[0] * SNOWBALL_SPEED, n[1] * SNOWBALL_SPEED, n[2] * SNOWBALL_SPEED],
-      bornAt: now
+      vel: [n[0]*SNOWBALL_SPEED, n[1]*SNOWBALL_SPEED, n[2]*SNOWBALL_SPEED],
+      bornAt: now,
     });
   });
 
   socket.on('disconnect', () => {
+    console.log('[socket] disconnected', socket.id);
     if (player) {
       state.players.delete(player.id);
-      const alive = [...state.players.values()].filter((p) => p.alive).length;
+      const alive = [...state.players.values()].filter(p => p.alive).length;
       if (alive < 2 && state.phase !== PHASES.LOBBY) {
         state.phase = PHASES.ENDED;
         setTimeout(resetMatch, 1500);
@@ -247,13 +280,14 @@ io.on('connection', (socket) => {
   });
 });
 
-// ---- Physics loop
+// --- Physics loop
 let lastTick = Date.now();
 setInterval(() => {
   const now = Date.now();
-  const dt = Math.min(0.05, (now - lastTick) / 1000);
-  lastTick = now;
+  const dt  = Math.min(0.05, (now - lastTick) / 1000);
+  lastTick  = now;
 
+  // Move players when LIVE; or always if DEV_SOLO so solo tests move
   if (state.phase === PHASES.LIVE || DEV_SOLO) {
     for (const p of state.players.values()) {
       if (!p.alive) continue;
@@ -271,12 +305,13 @@ setInterval(() => {
   }
 
   // Snowball sim + hits
-  state.snowballs = state.snowballs.filter((sb) => now - sb.bornAt < SNOWBALL_LIFETIME);
+  state.snowballs = state.snowballs.filter(sb => now - sb.bornAt < SNOWBALL_LIFETIME);
   for (const sb of state.snowballs) {
     sb.pos[0] += sb.vel[0] * dt;
     sb.pos[1] += sb.vel[1] * dt;
     sb.pos[2] += sb.vel[2] * dt;
     if (sb.pos[1] < 0) sb.pos[1] = 0;
+
     for (const p of state.players.values()) {
       if (!p.alive || p.id === sb.ownerId) continue;
       const d = Math.hypot(p.pos[0] - sb.pos[0], p.pos[2] - sb.pos[2]);
@@ -288,7 +323,7 @@ setInterval(() => {
   }
 
   if (state.phase === PHASES.LIVE) {
-    const alive = [...state.players.values()].filter((p) => p.alive);
+    const alive = [...state.players.values()].filter(p => p.alive);
     if (alive.length <= 1) {
       state.phase = PHASES.ENDED;
       io.emit('game:winner', { id: alive[0]?.id || null, name: alive[0]?.name || null });
@@ -297,22 +332,22 @@ setInterval(() => {
   }
 }, 1000 / TICKRATE);
 
-// ---- Snapshots
+// --- Snapshots
 setInterval(() => {
-  const players = [...state.players.values()].map((p) => ({
-    id: p.id, name: p.name, color: p.color, pos: p.pos, yaw: p.yaw, alive: p.alive
+  const players = [...state.players.values()].map(p => ({
+    id: p.id, name: p.name, color: p.color, pos: p.pos, yaw: p.yaw, alive: p.alive,
   }));
-  const snowballs = state.snowballs.map((s) => ({ id: s.id, pos: s.pos }));
+  const snowballs = state.snowballs.map(s => ({ id: s.id, pos: s.pos }));
   io.emit('world:state', {
     phase: state.phase,
     countdown: state.countdown,
     players,
     snowballs,
-    arena: { radius: ARENA_RADIUS }
+    arena: { radius: ARENA_RADIUS },
   });
 }, 1000 / SNAPSHOT_RATE);
 
-// ---- Start server
+// --- Start server
 server.listen(PORT, () => {
   console.log(`Snowball-IO listening on ${PORT}`);
   console.log('PUBLIC_BASE_URL:', PUBLIC_BASE_URL || '(derived from request)');
