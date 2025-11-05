@@ -17,11 +17,10 @@ const __dirname = path.dirname(__filename);
 const PORT          = process.env.PORT || 3000;
 const JWT_SECRET    = process.env.JWT_SECRET || 'dev-secret';
 
-// IMPORTANT: default to your HostGator domain so /issue always points to play.html
+// IMPORTANT: default to your HostGator domain so all join links land there
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'https://snowball.lanewaypcrepairs.com').replace(/\/+$/, '');
 
-// Solo play on by default so you can move/shoot alone
-const MIN_PLAYERS = Number(process.env.MIN_PLAYERS || 1);      // set 2+ for real matches
+const MIN_PLAYERS = Number(process.env.MIN_PLAYERS || 1);      // 1 for solo dev, 2+ for real rounds
 const DEV_SOLO    = (process.env.DEV_SOLO || 'true') === 'true';
 
 // Front-end (HostGator), backend (Render), local
@@ -55,17 +54,16 @@ app.get('/phase', (_req, res) => {
   });
 });
 
-// ----- Issue short-lived join tokens + QR
+// =====================================================================
+// QR FLOW (host admin page uses this to mint a QR with a join link)
+// =====================================================================
 app.post('/issue', async (req, res) => {
   try {
     const { employeeId, displayName } = req.body || {};
     if (!employeeId) return res.status(400).json({ error: 'employeeId required' });
 
     const token = jwt.sign({ employeeId, displayName }, JWT_SECRET, { expiresIn: '10m' });
-
-    // Always use HostGator (or PUBLIC_BASE_URL if you set it differently)
-    const base    = PUBLIC_BASE_URL; // e.g. https://snowball.lanewaypcrepairs.com
-    const joinUrl = `${base}/play.html?token=${encodeURIComponent(token)}`;
+    const joinUrl = `${PUBLIC_BASE_URL}/play.html?token=${encodeURIComponent(token)}`;
     const qrDataUrl = await QRCode.toDataURL(joinUrl, { margin: 1, scale: 8 });
 
     res.json({ joinUrl, qrDataUrl });
@@ -73,6 +71,37 @@ app.post('/issue', async (req, res) => {
     console.error('Error in /issue:', err?.stack || err);
     res.status(500).json({ error: 'Failed to issue QR' });
   }
+});
+
+// =====================================================================
+// MOBILE NAME JOIN (the new mobile form posts a name here)
+// Returns { ok, token, joinUrl } so client can pushState to play screen
+// =====================================================================
+app.post('/join', (req, res) => {
+  try {
+    const { displayName } = req.body || {};
+    const name = String(displayName || '').trim();
+    if (!name) return res.status(400).json({ ok: false, error: 'displayName required' });
+
+    // use name as employeeId too (no HR system here)
+    const employeeId = name;
+    const token = jwt.sign({ employeeId, displayName: name }, JWT_SECRET, { expiresIn: '10m' });
+    const joinUrl = `${PUBLIC_BASE_URL}/play.html?token=${encodeURIComponent(token)}`;
+
+    // simple success
+    return res.json({ ok: true, token, joinUrl });
+  } catch (err) {
+    console.error('Error in /join:', err?.stack || err);
+    res.status(500).json({ ok: false, error: 'join failed' });
+  }
+});
+
+// Convenience: GET that gives back a ready link for quick testing in a browser
+app.get('/join-url', (req, res) => {
+  const name = String(req.query.name || 'Player').trim();
+  const token = jwt.sign({ employeeId: name, displayName: name }, JWT_SECRET, { expiresIn: '10m' });
+  const joinUrl = `${PUBLIC_BASE_URL}/play.html?token=${encodeURIComponent(token)}`;
+  res.json({ ok: true, joinUrl });
 });
 
 // ================= Game State =================
@@ -172,7 +201,7 @@ io.on('connection', (socket) => {
       socket.emit('you:spawn', { id, color, pos: player.pos, name: player.name });
 
       if (DEV_SOLO && state.phase === PHASES.LOBBY) {
-        state.phase = PHASES.LIVE; // move immediately in solo mode
+        state.phase = PHASES.LIVE; // solo: start immediately
         console.log('DEV_SOLO: forcing immediate LIVE');
       } else {
         tryStartMatch();
