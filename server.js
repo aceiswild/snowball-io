@@ -304,14 +304,14 @@ setInterval(() => {
     }
   }
 
-  if (state.phase === PHASES.LIVE) {
-    const alive = [...state.players.values()].filter(p => p.alive);
-    if (alive.length <= 1) {
-      state.phase = PHASES.ENDED;
-      io.emit('game:winner', { id: alive[0]?.id || null, name: alive[0]?.name || null });
-      setTimeout(resetMatch, 2500);
-    }
+if (state.phase === PHASES.LIVE && !DEV_SOLO) {
+  const alive = [...state.players.values()].filter(p => p.alive);
+  if (alive.length <= 1) {
+    state.phase = PHASES.ENDED;
+    io.emit('game:winner', { id: alive[0]?.id || null, name: alive[0]?.name || null });
+    setTimeout(resetMatch, 2500);
   }
+}
 }, 1000 / TICKRATE);
 
 // ---------- Snapshot loop ----------
