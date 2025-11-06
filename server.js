@@ -9,93 +9,66 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import cors from 'cors';
 
-// --- ESM dirname helpers
+// --- __dirname for ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-// --- Config / Env
+// --- Env / Config
 const PORT            = process.env.PORT || 3000;
 const JWT_SECRET      = process.env.JWT_SECRET || 'dev-secret';
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || '';
-const MIN_PLAYERS     = Number(process.env.MIN_PLAYERS || 1);     // 1 for solo, 2+ for real rounds
-const DEV_SOLO        = (process.env.DEV_SOLO || 'true') === 'true';
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/,'');
+const MIN_PLAYERS     = Number(process.env.MIN_PLAYERS || 1);        // 1 for solo dev
+const DEV_SOLO        = (process.env.DEV_SOLO || 'true') === 'true'; // run even if not LIVE
 
-// --- Allowed origins (HostGator page, Render backend, local dev). Add more if needed.
+// Allowed origins: HostGator front-end, Render back-end, local dev
 const ALLOWED_ORIGINS = [
   'https://snowball.lanewaypcrepairs.com',
   'https://snowball-dian.onrender.com',
   'http://localhost:3000'
 ];
 
-// --- App setup
-const app    = express();
+const app = express();
 const server = http.createServer(app);
 
-// --- Socket.IO w/ CORS
+// --- Socket.IO with CORS
 const io = new Server(server, {
   cors: { origin: ALLOWED_ORIGINS, methods: ['GET','POST'], credentials: true }
 });
 
+// --- Express middleware
 app.set('trust proxy', true);
 app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));
 app.use(express.json());
-
-// Serve static files (play.html, join.html, client.js, etc.) from /public
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ---------- Utilities ----------
-function baseUrlFromReq(req) {
-  // Prefer env (no guessing)
-  if (PUBLIC_BASE_URL) return String(PUBLIC_BASE_URL).replace(/\/+$/, '');
-  // Else derive from proxy headers / request
-  const forwardedProto = (req.headers['x-forwarded-proto'] || '').split(',')[0];
-  const forwardedHost  = (req.headers['x-forwarded-host']  || '').split(',')[0];
-  const scheme = forwardedProto || req.protocol;
-  const host   = forwardedHost  || req.get('host');
-  return `${scheme}://${host}`;
-}
-
-// ---------- Health / Phase ----------
+// --- Health & phase probes
 app.get('/health', (_req, res) => res.send('ok'));
-
 app.get('/phase', (_req, res) => {
   res.json({
     phase: state.phase,
     countdown: state.countdown,
-    players: [...state.players.values()].map(p => ({ id: p.id, name: p.name, alive: p.alive })),
+    players: [...state.players.values()].map(p => ({ id: p.id, alive: p.alive })),
     devSolo: DEV_SOLO,
     minPlayers: MIN_PLAYERS
   });
 });
 
-// ---------- Join endpoints ----------
-// /join: Accepts { displayName } and returns { ok, token, joinUrl }
-app.post('/join', async (req, res) => {
-  try {
-    const { displayName } = req.body || {};
-    const name = (displayName || '').trim();
-    if (!name) return res.status(400).json({ error: 'displayName required' });
+// --- Helpers
+function baseUrlFrom(req) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
+  const xfProto = (req.headers['x-forwarded-proto'] || '').split(',')[0] || req.protocol;
+  const xfHost  = (req.headers['x-forwarded-host']  || '').split(',')[0] || req.get('host');
+  return `${xfProto}://${xfHost}`;
+}
 
-    const token = jwt.sign({ employeeId: 'GUEST', displayName: name }, JWT_SECRET, { expiresIn: '10m' });
-    const base  = baseUrlFromReq(req);
-    const joinUrl = `${base}/play.html?token=${encodeURIComponent(token)}`;
-
-    res.json({ ok: true, token, joinUrl });
-  } catch (err) {
-    console.error('Error in /join:', err?.stack || err);
-    res.status(500).json({ error: 'Failed to join' });
-  }
-});
-
-// /issue: Accepts { employeeId, displayName } and returns { joinUrl, qrDataUrl }
+// --- Token issuing (QR or programmatic)
 app.post('/issue', async (req, res) => {
   try {
     const { employeeId, displayName } = req.body || {};
     if (!employeeId) return res.status(400).json({ error: 'employeeId required' });
 
-    const token = jwt.sign({ employeeId, displayName }, JWT_SECRET, { expiresIn: '10m' });
-    const base  = baseUrlFromReq(req);
-    const joinUrl = `${base}/play.html?token=${encodeURIComponent(token)}`;
+    const token   = jwt.sign({ employeeId, displayName }, JWT_SECRET, { expiresIn: '10m' });
+    const joinUrl = `${baseUrlFrom(req).replace(/\/+$/,'')}/play.html?token=${encodeURIComponent(token)}`;
     const qrDataUrl = await QRCode.toDataURL(joinUrl, { margin: 1, scale: 8 });
 
     res.json({ joinUrl, qrDataUrl });
@@ -105,22 +78,37 @@ app.post('/issue', async (req, res) => {
   }
 });
 
+// --- Simple join endpoint for mobile join screen
+app.post('/join', (req, res) => {
+  try {
+    const { displayName } = req.body || {};
+    if (!displayName) return res.status(400).json({ error: 'displayName required' });
+    // Use a synthetic employeeId for ad-hoc joins
+    const token = jwt.sign({ employeeId: 'GUEST', displayName }, JWT_SECRET, { expiresIn: '30m' });
+    const joinUrl = `${(PUBLIC_BASE_URL || '').replace(/\/+$/,'') || baseUrlFrom(req)}/play.html?token=${encodeURIComponent(token)}`;
+    return res.json({ ok: true, token, joinUrl });
+  } catch (e) {
+    console.error('/join error:', e?.stack || e);
+    return res.status(500).json({ error: 'join failed' });
+  }
+});
+
 // ---------------- Game State ----------------
-const TICKRATE         = 30;
-const SNAPSHOT_RATE    = 18;
-const ARENA_RADIUS     = 25;
-const MOVE_SPEED       = 7;
-const THROW_COOLDOWN_MS= 600;
-const SNOWBALL_SPEED   = 24;
-const SNOWBALL_LIFETIME= 1800;
-const HIT_RADIUS       = 1.2;
+const TICKRATE           = 30;
+const SNAPSHOT_RATE      = 18;
+const ARENA_RADIUS       = 25;
+const MOVE_SPEED         = 7;
+const THROW_COOLDOWN_MS  = 600;
+const SNOWBALL_SPEED     = 24;
+const SNOWBALL_LIFETIME  = 1800;
+const HIT_RADIUS         = 1.2;
 
 const PHASES = { LOBBY: 'lobby', COUNTDOWN: 'countdown', LIVE: 'live', ENDED: 'ended' };
 
 const state = {
   phase: PHASES.LOBBY,
   countdown: 0,
-  players: new Map(), // id -> player
+  players: new Map(),   // id -> player
   snowballs: []
 };
 
@@ -140,7 +128,7 @@ function clampArena([x, y, z]) {
 
 function tryStartMatch() {
   if (state.phase !== PHASES.LOBBY) return;
-  const aliveCount = state.players.size;
+  const aliveCount = [...state.players.values()].length;
   if (aliveCount >= MIN_PLAYERS) {
     state.phase = PHASES.COUNTDOWN;
     state.countdown = 3;
@@ -166,7 +154,7 @@ function resetMatch() {
   }
 }
 
-// ---------- Dev helpers ----------
+// --- Dev helpers
 app.post('/dev/force-start', (_req, res) => {
   if ([PHASES.LOBBY, PHASES.COUNTDOWN].includes(state.phase)) {
     state.phase = PHASES.LIVE;
@@ -176,13 +164,9 @@ app.post('/dev/force-start', (_req, res) => {
   }
   res.json({ ok: false, phase: state.phase });
 });
+app.post('/dev/reset', (_req, res) => { resetMatch(); res.json({ ok: true, phase: state.phase }); });
 
-app.post('/dev/reset', (_req, res) => {
-  resetMatch();
-  res.json({ ok: true, phase: state.phase });
-});
-
-// ---------------- Sockets ----------------
+// --- Sockets
 io.on('connection', (socket) => {
   console.log('socket connected', socket.id);
   let player = null;
@@ -191,11 +175,11 @@ io.on('connection', (socket) => {
     try {
       const { employeeId, displayName } = jwt.verify(token, JWT_SECRET);
 
-      const id    = socket.id;
+      const id = socket.id;
       const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
       player = {
         id,
-        name: displayName || String(employeeId) || 'Player',
+        name: displayName || String(employeeId),
         color,
         pos: randSpawn(),
         yaw: 0,
@@ -203,7 +187,6 @@ io.on('connection', (socket) => {
         lastThrow: 0,
         input: { fwd: 0, back: 0, left: 0, right: 0 }
       };
-
       state.players.set(id, player);
       socket.emit('you:spawn', { id, color, pos: player.pos, name: player.name });
 
@@ -220,16 +203,16 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('input:state', (data = {}) => {
+  socket.on('input:state', (data) => {
     if (!player || !player.alive) return;
     if (!DEV_SOLO && state.phase !== PHASES.LIVE) return;
 
-    const { fwd, back, left, right, yaw } = data;
+    const { fwd, back, left, right, yaw } = data || {};
     player.input = { fwd: !!fwd, back: !!back, left: !!left, right: !!right };
     if (Number.isFinite(yaw)) player.yaw = yaw;
   });
 
-  socket.on('action:throw', ({ dir } = {}) => {
+  socket.on('action:throw', ({ dir }) => {
     if (!player || !player.alive) return;
     if (!DEV_SOLO && state.phase !== PHASES.LIVE) return;
 
@@ -250,38 +233,38 @@ io.on('connection', (socket) => {
     });
   });
 
-socket.on('disconnect', () => {
-  console.log('socket disconnected', socket.id);
-  if (player) {
+  socket.on('disconnect', () => {
+    console.log('socket disconnected', socket.id);
+    if (!player) return;
+
     state.players.delete(player.id);
 
-    // In DEV_SOLO: if everyone left, just go back to LOBBY quietly
     if (DEV_SOLO) {
+      // In solo, just clear to LOBBY when last player leaves.
       if (state.players.size === 0) {
         state.phase = PHASES.LOBBY;
         state.countdown = 0;
         state.snowballs.length = 0;
       }
-      return; // no auto-reset loop in solo mode
+      return;
     }
 
-    // Normal (non-solo) behavior:
     const alive = [...state.players.values()].filter(p => p.alive).length;
     if (alive < 2 && state.phase !== PHASES.LOBBY) {
       state.phase = PHASES.ENDED;
       setTimeout(resetMatch, 1500);
     }
-  }
+  });
 });
 
-// ---------- Physics loop ----------
+// --- Physics loop
 let lastTick = Date.now();
 setInterval(() => {
   const now = Date.now();
-  const dt  = Math.min(0.05, (now - lastTick) / 1000);
+  const dt = Math.min(0.05, (now - lastTick) / 1000);
   lastTick = now;
 
-  // Movement runs in LIVE, or always if DEV_SOLO
+  // Move in LIVE, or always in DEV_SOLO
   if (state.phase === PHASES.LIVE || DEV_SOLO) {
     for (const p of state.players.values()) {
       if (!p.alive) continue;
@@ -305,7 +288,6 @@ setInterval(() => {
     sb.pos[1] += sb.vel[1] * dt;
     sb.pos[2] += sb.vel[2] * dt;
     if (sb.pos[1] < 0) sb.pos[1] = 0;
-
     for (const p of state.players.values()) {
       if (!p.alive || p.id === sb.ownerId) continue;
       const d = Math.hypot(p.pos[0] - sb.pos[0], p.pos[2] - sb.pos[2]);
@@ -316,17 +298,18 @@ setInterval(() => {
     }
   }
 
-if (state.phase === PHASES.LIVE && !DEV_SOLO) {
-  const alive = [...state.players.values()].filter(p => p.alive);
-  if (alive.length <= 1) {
-    state.phase = PHASES.ENDED;
-    io.emit('game:winner', { id: alive[0]?.id || null, name: alive[0]?.name || null });
-    setTimeout(resetMatch, 2500);
+  // Winner check (disabled in DEV_SOLO so it doesn’t keep resetting)
+  if (state.phase === PHASES.LIVE && !DEV_SOLO) {
+    const alive = [...state.players.values()].filter(p => p.alive);
+    if (alive.length <= 1) {
+      state.phase = PHASES.ENDED;
+      io.emit('game:winner', { id: alive[0]?.id || null, name: alive[0]?.name || null });
+      setTimeout(resetMatch, 2500);
+    }
   }
-}
 }, 1000 / TICKRATE);
 
-// ---------- Snapshot loop ----------
+// --- World snapshots
 setInterval(() => {
   const players = [...state.players.values()].map(p => ({
     id: p.id, name: p.name, color: p.color, pos: p.pos, yaw: p.yaw, alive: p.alive
@@ -341,10 +324,10 @@ setInterval(() => {
   });
 }, 1000 / SNAPSHOT_RATE);
 
-// ---------- Start ----------
+// --- Start
 server.listen(PORT, () => {
   console.log(`Snowball-IO listening on ${PORT}`);
-  console.log('PUBLIC_BASE_URL:', PUBLIC_BASE_URL || '(derived from request at runtime)');
+  console.log('PUBLIC_BASE_URL:', PUBLIC_BASE_URL || '(derived from request)');
   console.log('Allowed CORS origins:', ALLOWED_ORIGINS);
   console.log('MIN_PLAYERS:', MIN_PLAYERS, 'DEV_SOLO:', DEV_SOLO);
 });
