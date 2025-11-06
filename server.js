@@ -140,18 +140,18 @@ function resetMatch() {
 
 // ---- Socket handlers
 io.on('connection', (socket) => {
-  console.log('socket connected', socket.id);
+  console.log('[SOCKET] connected', socket.id);
   let player = null;
 
-  // ACK-STYLE auth: server replies via callback so the client knows success/failure
-  socket.on('auth:join', (payload, ack) => {
+  socket.on('auth:join', ({ token }) => {
+    console.log('[JOIN] auth:join received. hasToken:', !!token, 'socket:', socket.id);
     try {
-      const { token } = payload || {};
-      if (!token) throw new Error('missing token');
       const { employeeId, displayName } = jwt.verify(token, JWT_SECRET);
+      console.log('[JOIN] jwt ok:', { employeeId, displayName });
 
       const id = socket.id;
-      const color = `hsl(${Math.floor(Math.random()*360)} 70% 55%)`;
+      const color = `hsl(${Math.floor(Math.random() * 360)} 70% 55%)`;
+
       player = {
         id,
         name: displayName || String(employeeId),
@@ -160,25 +160,35 @@ io.on('connection', (socket) => {
         yaw: 0,
         alive: true,
         lastThrow: 0,
-        input: { fwd:0,back:0,left:0,right:0 }
+        input: { fwd: 0, back: 0, left: 0, right: 0 }
       };
+
       state.players.set(id, player);
-
-      // confirm to client first
-      if (typeof ack === 'function') ack({ ok:true, id, name: player.name });
-
-      // then spawn event
+      console.log('[JOIN] player added. players:', state.players.size);
       socket.emit('you:spawn', { id, color, pos: player.pos, name: player.name });
 
-      if (DEV_SOLO && state.phase === PHASES.LOBBY) {
+      // Force LIVE immediately for solo dev
+      if (state.phase === PHASES.LOBBY && state.players.size >= 1) {
         state.phase = PHASES.LIVE;
-        console.log('DEV_SOLO: forcing LIVE');
-      } else {
-        tryStartMatch();
+        state.countdown = 0;
+        console.log('[PHASE] FORCING LIVE (solo).');
       }
+
+      // Send an immediate world snapshot so the client UI updates without waiting for the interval tick
+      const players = [...state.players.values()].map(p => ({
+        id: p.id, name: p.name, color: p.color, pos: p.pos, yaw: p.yaw, alive: p.alive
+      }));
+      const snowballs = state.snowballs.map(s => ({ id: s.id, pos: s.pos }));
+      io.emit('world:state', {
+        phase: state.phase,
+        countdown: state.countdown,
+        players,
+        snowballs,
+        arena: { radius: ARENA_RADIUS }
+      });
+
     } catch (e) {
-      console.error('auth failed', e.message);
-      if (typeof ack === 'function') ack({ ok:false, error: e.message });
+      console.error('[JOIN] auth failed:', e.message);
       socket.emit('error', { message: 'Invalid or expired token' });
       socket.disconnect();
     }
@@ -187,6 +197,7 @@ io.on('connection', (socket) => {
   socket.on('input:state', (data) => {
     if (!player || !player.alive) return;
     if (!DEV_SOLO && state.phase !== PHASES.LIVE) return;
+
     const { fwd, back, left, right, yaw } = data || {};
     player.input = { fwd: !!fwd, back: !!back, left: !!left, right: !!right };
     if (Number.isFinite(yaw)) player.yaw = yaw;
@@ -195,27 +206,29 @@ io.on('connection', (socket) => {
   socket.on('action:throw', ({ dir }) => {
     if (!player || !player.alive) return;
     if (!DEV_SOLO && state.phase !== PHASES.LIVE) return;
+
     const now = Date.now();
     if (now - player.lastThrow < THROW_COOLDOWN_MS) return;
     player.lastThrow = now;
 
-    const d = Array.isArray(dir) ? dir : [0,0,-1];
+    const d = Array.isArray(dir) ? dir : [0, 0, -1];
     const len = Math.hypot(d[0], d[1], d[2]) || 1;
-    const n = [d[0]/len, d[1]/len, d[2]/len];
+    const n = [d[0] / len, d[1] / len, d[2] / len];
 
     state.snowballs.push({
       id: `${socket.id}:${now}`,
       ownerId: player.id,
       pos: [player.pos[0], player.pos[1] + 1.0, player.pos[2]],
-      vel: [n[0]*SNOWBALL_SPEED, n[1]*SNOWBALL_SPEED, n[2]*SNOWBALL_SPEED],
+      vel: [n[0] * SNOWBALL_SPEED, n[1] * SNOWBALL_SPEED, n[2] * SNOWBALL_SPEED],
       bornAt: now
     });
   });
 
   socket.on('disconnect', () => {
+    console.log('[SOCKET] disconnected', socket.id);
     if (player) {
       state.players.delete(player.id);
-      const alive = [...state.players.values()].filter(p=>p.alive).length;
+      const alive = [...state.players.values()].filter(p => p.alive).length;
       if (alive < 2 && state.phase !== PHASES.LOBBY) {
         state.phase = PHASES.ENDED;
         setTimeout(resetMatch, 1500);
@@ -223,6 +236,7 @@ io.on('connection', (socket) => {
     }
   });
 });
+
 
 // ---- Physics loop
 let lastTick = Date.now();
