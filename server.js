@@ -250,16 +250,28 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('disconnect', () => {
-    if (player) {
-      state.players.delete(player.id);
-      const alive = [...state.players.values()].filter(p => p.alive).length;
-      if (alive < 2 && state.phase !== PHASES.LOBBY) {
-        state.phase = PHASES.ENDED;
-        setTimeout(resetMatch, 1500);
+socket.on('disconnect', () => {
+  console.log('socket disconnected', socket.id);
+  if (player) {
+    state.players.delete(player.id);
+
+    // In DEV_SOLO: if everyone left, just go back to LOBBY quietly
+    if (DEV_SOLO) {
+      if (state.players.size === 0) {
+        state.phase = PHASES.LOBBY;
+        state.countdown = 0;
+        state.snowballs.length = 0;
       }
+      return; // no auto-reset loop in solo mode
     }
-  });
+
+    // Normal (non-solo) behavior:
+    const alive = [...state.players.values()].filter(p => p.alive).length;
+    if (alive < 2 && state.phase !== PHASES.LOBBY) {
+      state.phase = PHASES.ENDED;
+      setTimeout(resetMatch, 1500);
+    }
+  }
 });
 
 // ---------- Physics loop ----------
