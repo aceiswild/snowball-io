@@ -15,8 +15,8 @@ const __dirname = path.dirname(__filename);
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
-const MIN_PLAYERS = Number(process.env.MIN_PLAYERS || 1);
-const DEV_SOLO = (process.env.DEV_SOLO || 'true') === 'true';
+const MIN_PLAYERS = 1;          // start with 1 player
+const DEV_SOLO    = true;       // accept inputs even if phase isn't LIVE
 
 const ALLOWED_ORIGINS = [
   'https://snowball.lanewaypcrepairs.com',
